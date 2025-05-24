@@ -824,7 +824,7 @@ export default function GalleryPage() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
           <div className="text-center text-gray-600">
             <p>Copyright© 2023 - present DanKe </p>
-            <p href='https://github.com/DanKE123abc/MyWebTemplate'>在GitHub上开源<p>
+            <a href='https://github.com/DanKE123abc/MyWebTemplate'>在GitHub上开源</a>
           </div>
         </div>
       </footer>
