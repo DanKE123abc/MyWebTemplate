@@ -823,7 +823,8 @@ export default function GalleryPage() {
       <footer className="bg-white border-t mt-16">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
           <div className="text-center text-gray-600">
-            <p>© 2025 DanKe.</p>
+            <p>Copyright© 2023 - present DanKe </p>
+            <p href='https://github.com/DanKE123abc/MyWebTemplate'>在GitHub上开源<p>
           </div>
         </div>
       </footer>
