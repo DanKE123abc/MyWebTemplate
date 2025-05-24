@@ -30,3 +30,7 @@ next-env.d.ts
 /.vscode/
 /.vs/
 workspace.xml
+
+pnpm-lock.yaml
+yarn.lock
+package-lock.json
