@@ -43,8 +43,12 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     const defaultVariants = cn(buttonVariants({ variant, size, className }))
 
     if (href) {
+      // `props` is typed for <button>, so it needs a double assertion to spread
+      // onto an <a>; only the element-specific event handler types differ.
+      const anchorProps = props as unknown as React.AnchorHTMLAttributes<HTMLAnchorElement>
+
       return (
-        <a href={href} className={defaultVariants} {...props}>
+        <a href={href} className={defaultVariants} {...anchorProps}>
           {props.children}
         </a>
       );
