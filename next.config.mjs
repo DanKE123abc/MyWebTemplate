@@ -8,6 +8,8 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
+  // wrangler 只在 Node 开发环境使用，交给 Node 直接加载，避免 Turbopack 打包其原生依赖。
+  serverExternalPackages: ["wrangler", "miniflare", "esbuild"],
   async rewrites() {
     return [
       {
