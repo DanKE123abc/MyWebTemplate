@@ -6,7 +6,7 @@
 // =============================================
 
 /** 已支持的后端标识 */
-export type DatabaseProvider = "pg" | "mysql" | "d1";
+export type DatabaseProvider = "pg" | "mysql" | "d1" | "dk1";
 
 /** 参数统一按位置传入；业务 SQL 一律写 $1 / $2 ...，由各适配器翻译 */
 export type QueryParams = unknown[];

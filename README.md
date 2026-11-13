@@ -142,9 +142,9 @@ npx wrangler login
 npm run deploy:vinext
 ```
 
-## 数据库中间层（PG / MySQL / D1）
+## 数据库中间层（PG / MySQL / D1 / DK1）
 
-`lib/db` 是**可选能力**：不需要数据库的子项目只要不 import，就不会加载驱动、不会读配置，也不占启动时间。需要时业务代码只面对统一接口，底层是 PostgreSQL、MySQL 还是 Cloudflare D1 由配置决定。
+`lib/db` 是**可选能力**：不需要数据库的子项目只要不 import，就不会加载驱动、不会读配置，也不占启动时间。需要时业务代码只面对统一接口，底层是 PostgreSQL、MySQL、Cloudflare D1 还是 DK1 由配置决定。
 
 ### 目录
 
@@ -155,6 +155,7 @@ lib/db/
 ├── pg.ts          PostgreSQL 适配器（pg.Pool）
 ├── mysql.ts       MySQL 适配器（mysql2 连接池）
 ├── d1.ts          Cloudflare D1 适配器
+├── dk1.ts         DK1 虚拟 D1 适配器（REST / Service Binding）
 ├── sql.ts         $1 占位符 / PG 类型转换的方言归一化
 └── d1-types.ts    D1 最小类型声明
 
@@ -162,7 +163,7 @@ lib/bindings*.ts        运行时绑定（D1 在 Next dev / Vinext 均可读）
 db/migrations/          D1 迁移（wrangler）
 db/migrations/pg/       PostgreSQL 迁移（npm run db:migrate）
 db/migrations/mysql/    MySQL 迁移（npm run db:migrate）
-scripts/db-check.mjs    连通性检查
+scripts/db-check.mjs    连通性检查（PG / MySQL / DK1）
 scripts/db-migrate.mjs  PG / MySQL 迁移执行器
 app/healthz/route.ts    健康检查（含数据库状态）
 ```
@@ -202,10 +203,74 @@ const status = await getDbStatus(); // { enabled, provider, source, message? }
 | `pg` | `DATABASE_PROVIDER=pg` + `DATABASE_URL=postgresql://...` | Node / Vercel 等平台 |
 | `mysql` | `DATABASE_PROVIDER=mysql` + `DATABASE_URL=mysql://...` | Node / 自建 MySQL |
 | `d1` | `DATABASE_PROVIDER=d1`（Workers 可省略；Next dev 必填） | Workers / Next dev；绑定来自 `wrangler.jsonc` |
+| `dk1` | `DATABASE_PROVIDER=dk1` + `DK1_APP_ID` + `DK1_API_KEY` + `DK1_URL`（Workers 可用 `DK1_SERVICE`） | Workers / Node；共享物理 D1 上的虚拟 D1 |
 
-解析优先级：显式 `DATABASE_PROVIDER` → `DATABASE_URL` 的协议 → Workers 环境检测到 D1 绑定 `DB` → 未启用。Next dev 如果要用本地 D1，需显式设置 `DATABASE_PROVIDER=d1`（避免无数据库项目的健康检查意外启动 wrangler 代理）。Cloudflare Workers 内无法使用 pg/mysql 的 TCP 连接池，中间层会直接提示改用 D1。
+解析优先级：显式 `DATABASE_PROVIDER` → `DATABASE_URL` 的协议 → Workers 环境检测到 D1 绑定 `DB` → 未启用。Next dev 如果要用本地 D1，需显式设置 `DATABASE_PROVIDER=d1`（避免无数据库项目的健康检查意外启动 wrangler 代理）。Cloudflare Workers 内无法使用 pg/mysql 的 TCP 连接池，中间层会直接提示改用 D1/DK1。
 
 复制 `.env.example` 为 `.env.local` 后按需修改（`.env.local` 已被 gitignore）。
+
+### 接入 DK1
+
+DK1 不是新的物理数据库，而是共享物理 D1 上的虚拟实例。MyWebTemplate 通过 DK1 REST 数据面访问，不需要 `pg`/`mysql` 驱动。
+
+1. 在 DK1 Admin UI 或 Admin API 创建实例，记下一次性 `app_id` 和 `api_key`。
+2. 本地 Next dev：
+
+```bash
+DATABASE_PROVIDER=dk1
+DK1_URL=http://127.0.0.1:3000
+DK1_APP_ID=app_xxxxxxxx
+DK1_API_KEY=dk1_xxxxxxxx
+```
+
+3. Workers 部署：
+
+```jsonc
+// wrangler.jsonc
+"services": [
+  { "binding": "DK1_SERVICE", "service": "dk1-runtime" }
+],
+"vars": {
+  "DK1_APP_ID": "app_xxxxxxxx"
+}
+```
+
+```bash
+npx wrangler secret put DK1_API_KEY
+```
+
+Worker 内有 `DK1_SERVICE` 时优先走 Service Binding，不经过公网；`DK1_URL` 可省略。Node/本地开发没有 Service Binding，必须设置 `DK1_URL`。Service Binding 要求两个 Worker 在同一个 Cloudflare 账号；跨账号请使用 `DK1_URL` 指向统一入口。
+
+> 只使用 DK1 时，建议删除 `wrangler.jsonc` 里占位的 `d1_databases` 配置，避免部署时要求真实的 D1 `database_id`；如果仍保留 D1 作为可选 provider，则部署前填入真实 ID。
+
+4. 初始化 schema：通过 DK1 Admin UI 的迁移页，或 Admin API：
+
+```bash
+curl -sS -X POST "https://dk1.example.com/api/apps/$DK1_APP_ID/migrations" \
+  -H "Authorization: Bearer $DK1_ADMIN_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "version": 1,
+    "name": "init app_settings",
+    "sql": "CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL)"
+  }'
+```
+
+5. 连通性检查：
+
+```bash
+DATABASE_PROVIDER=dk1 DK1_URL=http://127.0.0.1:3000 \
+DK1_APP_ID=app_xxx DK1_API_KEY=dk1_xxx \
+npm run db:check
+```
+
+健康检查会显示：
+
+```json
+{ "status": "ok", "database": { "status": "ok", "provider": "dk1" } }
+```
+
+DK1 是共享物理 D1 的逻辑实例，容量、连接和配额由 DK1 Runtime 管理；业务 SQL 仍然统一写 `$1`，适配器会转换成 DK1 Runtime 需要的 SQLite 占位符。
 
 ### 初始化与迁移
 
@@ -215,16 +280,17 @@ const status = await getDbStatus(); // { enabled, provider, source, message? }
 | D1（线上） | `npm run db:migrate:remote` | 部署后访问 `/healthz` |
 | PostgreSQL | `npm run db:migrate`（执行 `db/migrations/pg/*.sql`） | `npm run db:check` |
 | MySQL | `npm run db:migrate`（执行 `db/migrations/mysql/*.sql`） | `npm run db:check` |
+| DK1 | Admin UI 迁移页，或 Admin API `/api/apps/:id/migrations` | `npm run db:check`（DK1_* 环境变量） |
 
-`db:migrate` / `db:check` 从当前 shell 环境读取 `DATABASE_PROVIDER` 与 `DATABASE_URL`。迁移记录写入 `_db_migrations` 表，已执行的文件会跳过；每个迁移文件只放一条 SQL。
+`db:migrate` / `db:check` 从当前 shell 环境读取 `DATABASE_PROVIDER` 与 `DATABASE_URL`；DK1 使用 `DK1_URL` / `DK1_APP_ID` / `DK1_API_KEY`。PG/MySQL 迁移记录写入 `_db_migrations` 表，已执行的文件会跳过；每个迁移文件只放一条 SQL。
 
 ### 已知差异
 
-- **事务**：D1 不支持 SQL `BEGIN/COMMIT`，`transaction()` 在 D1 上按顺序执行、不保证原子性；需要原子批量写入请用 `batch()`（D1 原生 batch 是单事务）。
-- **自增主键**：PG 需要 `INSERT ... RETURNING id`；MySQL / D1 可直接读 `lastInsertId`。
+- **事务**：D1 / DK1 不支持 SQL `BEGIN/COMMIT`，`transaction()` 在它们上面按顺序执行、不保证原子性；需要原子批量写入请用 `batch()`（D1/DK1 原生 batch 是单事务）。
+- **自增主键**：PG 需要 `INSERT ... RETURNING id`；MySQL / D1 / DK1 可直接读 `lastInsertId`。
 - **保留字**：示例表的 `key` 在 MySQL 中是保留字，写 MySQL SQL 时需用反引号。
-- **类型**：`jsonb` / `JSON`、时间类型在三种数据库上不完全一致，迁移脚本按方言分别维护（`db/migrations/<provider>/`）。
-- **占位符**：三种数据库的业务 SQL 统一写 `$1`；MySQL 适配器会转成 `?` 并重排参数，禁止与原生 `?` 混用。
+- **类型**：`jsonb` / `JSON`、时间类型在各数据库上不完全一致，迁移脚本按方言分别维护（`db/migrations/<provider>/`）。
+- **占位符**：业务 SQL 统一写 `$1`；D1/DK1 转成 `?N`，MySQL 转成 `?` 并重排参数，禁止与原生 `?` 混用。
 
 ### 健康检查
 
@@ -232,6 +298,7 @@ const status = await getDbStatus(); // { enabled, provider, source, message? }
 
 ```json
 { "status": "ok", "database": { "status": "ok", "provider": "pg" } }
+{ "status": "ok", "database": { "status": "ok", "provider": "dk1" } }
 { "status": "ok", "database": { "status": "disabled" } }
 ```
 

@@ -12,6 +12,12 @@
   "observability": {
     "enabled": true
   },
+  "services": [
+    {
+      "binding": "DK1_SERVICE",
+      "service": "dk1-runtime"
+    }
+  ],
   "d1_databases": [
     {
       "binding": "DB",

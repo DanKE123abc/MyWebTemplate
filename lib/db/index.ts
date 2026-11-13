@@ -1,4 +1,5 @@
 import { getD1Binding, D1Adapter } from "./d1";
+import { Dk1Adapter, hasDk1Binding } from "./dk1";
 import { MysqlAdapter } from "./mysql";
 import { PostgresAdapter } from "./pg";
 import type {
@@ -31,6 +32,7 @@ export type {
   SqlStatement,
 } from "./types";
 export { D1Adapter } from "./d1";
+export { Dk1Adapter, hasDk1Binding } from "./dk1";
 export { PostgresAdapter } from "./pg";
 export { MysqlAdapter } from "./mysql";
 export { toD1Sql, toMysqlSql, stripPgCasts } from "./sql";
@@ -38,6 +40,11 @@ export { toD1Sql, toMysqlSql, stripPgCasts } from "./sql";
 interface ResolvedConfig {
   provider: DatabaseProvider;
   connectionString?: string;
+  dk1?: {
+    baseUrl?: string;
+    appId: string;
+    apiKey: string;
+  };
   source: "env" | "url" | "d1-binding";
 }
 
@@ -64,6 +71,7 @@ function normalizeProvider(value: string | undefined): DatabaseProvider | null {
   if (lower === "pg" || lower === "postgres" || lower === "postgresql") return "pg";
   if (lower === "mysql" || lower === "mariadb") return "mysql";
   if (lower === "d1") return "d1";
+  if (lower === "dk1") return "dk1";
   return null;
 }
 
@@ -77,7 +85,7 @@ function providerFromUrl(url: string | undefined): DatabaseProvider | null {
 
 /**
  * 解析数据库配置。优先级：
- *   1. DATABASE_PROVIDER（显式配置，优先于 D1 绑定）
+ *   1. DATABASE_PROVIDER（显式配置，优先于 D1 绑定；dk1 也走这里）
  *   2. DATABASE_URL 的 scheme（postgres://、mysql://）
  *   3. Workers 环境检测到 D1 绑定 DB → d1
  *   4. 都没有 → 未启用数据库（Next dev 用 D1 请显式设置 DATABASE_PROVIDER=d1）
@@ -91,7 +99,7 @@ async function resolveConfig(): Promise<{ config: ResolvedConfig | null; error?:
   const fromUrl = providerFromUrl(url);
 
   if (rawProvider && !explicit) {
-    return { config: null, error: `未知的 DATABASE_PROVIDER "${rawProvider}"，支持 pg / mysql / d1。` };
+    return { config: null, error: `未知的 DATABASE_PROVIDER "${rawProvider}"，支持 pg / mysql / d1 / dk1。` };
   }
 
   // 无配置的 Node 项目不启动 wrangler 代理；只有 Workers 会自动探测 D1。
@@ -101,7 +109,41 @@ async function resolveConfig(): Promise<{ config: ResolvedConfig | null; error?:
   if (!provider) {
     return {
       config: null,
-      error: "数据库未启用：设置 DATABASE_PROVIDER=pg/mysql + DATABASE_URL，或在 wrangler.jsonc 配置 D1 绑定 DB。",
+      error: "数据库未启用：设置 DATABASE_PROVIDER=pg/mysql/dk1，或在 wrangler.jsonc 配置 D1 绑定 DB。",
+    };
+  }
+
+  if (provider === "dk1") {
+    const appId = process.env.DK1_APP_ID?.trim();
+    const apiKey = process.env.DK1_API_KEY?.trim();
+    const baseUrl = process.env.DK1_URL?.trim() || undefined;
+    if (!appId) {
+      return {
+        config: null,
+        error:
+          "DK1 缺少 DK1_APP_ID：请先在 DK1 创建实例，并配置 DK1_APP_ID。",
+      };
+    }
+    if (!apiKey) {
+      return {
+        config: null,
+        error:
+          "DK1 缺少 DK1_API_KEY：请把创建/轮换时拿到的一次性 Key 放进 Secret。",
+      };
+    }
+    if (!baseUrl && !(await hasDk1Binding())) {
+      return {
+        config: null,
+        error:
+          "DK1 缺少 DK1_URL（或 Workers 的 DK1_SERVICE 绑定）：请配置统一入口，例如 https://dk1.example.com。",
+      };
+    }
+    return {
+      config: {
+        provider: "dk1",
+        dk1: { baseUrl, appId, apiKey },
+        source: "env",
+      },
     };
   }
 
@@ -113,7 +155,7 @@ async function resolveConfig(): Promise<{ config: ResolvedConfig | null; error?:
       return { config: null, error: `DATABASE_PROVIDER=${provider} 与 DATABASE_URL 的协议不一致，请检查配置。` };
     }
     if (typeof navigator !== "undefined" && navigator.userAgent === "Cloudflare-Workers") {
-      return { config: null, error: "Cloudflare Workers 不支持 Node TCP 连接池，请改用 DATABASE_PROVIDER=d1 并配置 D1 绑定 DB。" };
+      return { config: null, error: "Cloudflare Workers 不支持 Node TCP 连接池，请改用 DATABASE_PROVIDER=d1（绑定 D1）或 DATABASE_PROVIDER=dk1（DK1 REST / Service Binding）。" };
     }
     return { config: { provider, connectionString: url, source: explicit ? "env" : "url" } };
   }
@@ -144,7 +186,10 @@ export async function getDb(): Promise<DatabaseAdapter> {
   const { config, error } = await resolveConfig();
   if (!config) throw new Error(error ?? "数据库未配置。");
 
-  const key = `${config.provider}:${config.connectionString ?? ""}`;
+  const key =
+    config.provider === "dk1"
+      ? `dk1:${config.dk1?.baseUrl ?? "binding"}:${config.dk1?.appId}:${config.dk1?.apiKey}`
+      : `${config.provider}:${config.connectionString ?? ""}`;
   const cached = cachedEntry();
   if (cached?.key === key) return cached.adapter;
 
@@ -164,6 +209,9 @@ export async function getDb(): Promise<DatabaseAdapter> {
       break;
     case "d1":
       adapter = new D1Adapter();
+      break;
+    case "dk1":
+      adapter = new Dk1Adapter(config.dk1!);
       break;
   }
 
